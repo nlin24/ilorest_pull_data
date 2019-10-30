@@ -1,0 +1,2 @@
+argparse-prompt==0.0.4
+python-ilorest-library==2.5.2
