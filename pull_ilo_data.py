@@ -9,7 +9,7 @@ from redfish import AuthMethod, redfish_logger, redfish_client, rest_client
 LOGGERFILE = "ILO_API.log"
 LOGGERFORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOGGER = redfish_logger(LOGGERFILE, LOGGERFORMAT, logging.INFO)
-LOGGER.info("HPE Restful API logs")
+LOGGER.info("Restful API logs")
 
 class ilo5RedfishObj(object):
     """
@@ -226,7 +226,7 @@ class ilo4RedfishObj(object):
     
     def get_model(self):
         '''
-        Retrieve system information
+        Retrieve system model
         '''
         res = self.rest_get('/redfish/v1/systems/1/')
         #print(res)
