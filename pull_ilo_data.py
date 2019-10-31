@@ -1,4 +1,4 @@
-import sys, os, socket
+import sys, os, socket, subprocess
 from argparse_prompt import PromptParser
 import logging
 import json
@@ -11,7 +11,10 @@ LOGGERFORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOGGER = redfish_logger(LOGGERFILE, LOGGERFORMAT, logging.INFO)
 LOGGER.info("HPE Restful API logs")
 
-class Gen10RedfishObj(object):
+class ilo5RedfishObj(object):
+    """
+    Redfish client object for iLO5 connection only.
+    """
     def __init__(self, host, login_account, login_password):
         try:
             self.redfish_client = redfish_client(base_url=host, username=login_account, password=login_password)
@@ -159,9 +162,9 @@ class Gen10RedfishObj(object):
         with open(filename, 'w') as fp:
             json.dump(firmware_inventory, fp, sort_keys=True, indent=4, separators=(',', ': '))
 
-class Gen9RestObj(object):
+class ilo4RedfishObj(object):
     '''
-    This is for accessting the RESTful APIs for Gen9 system using the rest client from the Python ilorest library.
+    REST client object for Gen9 and Gen8 systems with iLO4.
     '''
     def __init__(self, host, login_account, login_password):
         self.rest_client = rest_client(base_url=host, username=login_account, password=login_password)
@@ -229,7 +232,7 @@ class Gen9RestObj(object):
         #print(res)
         if "Model" in res.dict.keys():
             model = res.dict["Model"]
-            model = model.replace(" ", "_")
+            model = model.replace(" ", "_").strip()
             #print(model)
             return model
         else:
@@ -242,7 +245,7 @@ class Gen9RestObj(object):
         res = self.rest_get('/redfish/v1/systems/1/')
         #print(res)
         if "SerialNumber" in res.dict.keys():
-            sn = res.dict["SerialNumber"]
+            sn = res.dict["SerialNumber"].strip()
             #print(sn)
             return sn
         else:
@@ -273,14 +276,15 @@ class Gen9RestObj(object):
 
 def read_ilo_creds():
     """
-    Read in user input for iLO IP address, username, and password using argparse.
+    Read in user input for iLO IP address, username, and password using argparse. Calls the is_valid_ipv4_address() method to check the input IP address or FQDN for iLO.
     """
     parser = PromptParser()
     parser.add_argument('--password', help='iLO login password', secure=True)
-    parser.add_argument('--iloip', help='iLO IP address', required=True, prompt=False)
+    parser.add_argument('--iloip', help='iLO IP address or FQDN', required=True, prompt=False)
     parser.add_argument('--username', help='iLO login name', required=True, prompt=False) 
     args  = parser.parse_args()
     if is_valid_ipv4_address(args.iloip):
+        # Return the iLO login information if the IP/FQDN can be resolved and able to respond to ping
         ilo_access = {
             "ip": "https://{ip}".format(ip=args.iloip),
             "username": args.username,
@@ -288,18 +292,18 @@ def read_ilo_creds():
         }
         return ilo_access
     else:
-        raise Exception("User input error")
+        raise Exception("The iLO IP address or FQDN either failed to be resolved, incorrectly formatted, or failed to respond to pings")
     
 
 def download_configs(ilo_ip, username, password):
     """
-    The master script to call gen10 and gen9 iLOs.
+    This method creates a redfish client object for gen10 iLO5 system and REST client object for and gen9 and gen8 iLO4s, and then downloads and saves the system BIOS settings and the firmware inventory to separate JSON files onto the current working directory.
     """
-    iLO_obj = Gen10RedfishObj(host=str(ilo_ip), login_account=str(username), login_password=str(password))
+    iLO_obj = ilo5RedfishObj(host=str(ilo_ip), login_account=str(username), login_password=str(password))
     if iLO_obj.ilo_version == 4: # iLO 4 found. Log out iLO 5 Redfish and login in again with iLO 4 REST API
         iLO_obj.logout()
-        iLO_obj = Gen9RestObj(host=ilo_ip, login_account=username, login_password=password)
-        print(iLO_obj.SN)
+        iLO_obj = ilo4RedfishObj(host=ilo_ip, login_account=username, login_password=password)
+        print("iLO serial number: {sn}".format(sn=iLO_obj.SN))
         iLO_obj.download_bios_settings()
         iLO_obj.download_fw_inventory()
         iLO_obj.get_model()
@@ -307,7 +311,7 @@ def download_configs(ilo_ip, username, password):
         return 0
     elif iLO_obj.ilo_version == -1:
         raise Exception("iLO verison not identified")
-    print(iLO_obj.SN)
+    print("iLO serial number: {sn}".format(sn=iLO_obj.SN))
     iLO_obj.download_bios_settings()
     iLO_obj.download_fw_inventory()
     iLO_obj.get_model()
@@ -315,39 +319,41 @@ def download_configs(ilo_ip, username, password):
     return 0
 
 def is_valid_ipv4_address(address):
-    try:
-        socket.inet_pton(socket.AF_INET, address)
-    except AttributeError: # no inet_pton here, sorry
+    """
+    Takes an IP address or a FQDN, without the 'https://' prefix and return True if the IP address or the FQDN can be resolved, is formatted correctly, and able to repond to pings. Return False otherwise.
+    """
+    #print("input FQDN or IP address: {address}".format(address=address))
+    try: 
+        #print("test socket.gethostbyname")
+        my_ip = socket.gethostbyname(address)
+        #print("input IP/hostname resolves to IP {ip}".format(ip=my_ip))     
         try:
-            socket.inet_aton(address)
-        except socket.error:
+            #print("test socket.inet_aton")
+            socket.inet_aton(my_ip)
+            try:
+                # Test pinging the IP once, timeout at 100 ms
+                timeout = 200 #ms
+                cmd = ["ping",my_ip,"-n","1","-w",str(timeout)]
+                return_code = subprocess.call(cmd,stdout=subprocess.DEVNULL)
+                if return_code == 0:
+                    #print("Able to ping the IP")
+                    return True
+                else:
+                    print("Unable to ping the IP")
+                    return False
+            except:
+                print("Failed to execute ping")
+                return False
+        except:
+            print("IP not correctly formatted")
             return False
-        return address.count('.') == 3
-    except socket.error: # not a valid address
-        try: 
-            socket.gethostbyname(address)
-            return True
-        except:    
-            return False
-    return True
-
-def TEST_is_valid_ipv4_address():
-    address = "FICRUX1HMJ.americas.hpqcorp.net" #Return True
-    print("{address} is valid? {valid}".format(address=address, valid=is_valid_ipv4_address(address)))
-    
-    address = "127.0.0.1" # returns True
-    print("{address} is valid? {valid}".format(address=address, valid=is_valid_ipv4_address(address)))
-    
-    address = "127.0.0" # returns False
-    print("{address} is valid? {valid}".format(address=address, valid=is_valid_ipv4_address(address)))
-    
-    address = "runners-MacBook-Air.local" # returns True
-    print("{address} is valid? {valid}".format(address=address, valid=is_valid_ipv4_address(address)))
-
+    except:
+        print("gethostbyname failed. Try another IP or FQDN.")
+        return False
+        
 if __name__ == "__main__":
-    TEST_is_valid_ipv4_address()
-    #iLO_creds = read_ilo_creds()
+    iLO_creds = read_ilo_creds()
     #print(iLO_creds)
-    #download_configs(ilo_ip=iLO_creds["ip"], username=iLO_creds["username"], password=iLO_creds["password"])
+    download_configs(ilo_ip=iLO_creds["ip"], username=iLO_creds["username"], password=iLO_creds["password"])
     
 
