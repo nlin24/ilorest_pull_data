@@ -29,8 +29,8 @@ class ilo5RedfishObj(object):
         self.SN = self.get_sn()
         self.model = self.get_model()
         self.ilo_version = self.check_ilo_version()
-        self.bios = {"data" : self.download_bios_settings(), "type" :"bios"}
-        self.fw_inventory = {"data" : self.download_fw_inventory(), "type" : "firmware_inventory"}
+        self.bios = {"data" : None, "type" :"bios"}
+        self.fw_inventory = {"data" : None, "type" : "firmware_inventory"}
 
     def check_ilo_version(self):
         """
@@ -145,17 +145,24 @@ class ilo5RedfishObj(object):
         #print(fw_inventory_odata)
         temp = self.redfish_get(odata_link["@odata.id"])
         members = temp.dict["Members"]
-        firmware_inventory = []
+        firmware_inventory = {}
         for member in members:
             temp = self.redfish_get(member["@odata.id"])
             temp = temp.dict
             #print(temp)
-            del temp["@odata.context"]
-            del temp["@odata.etag"]
-            del temp["@odata.id"]
-            del temp["Oem"]
+            device_id = temp["Name"] + temp["Id"]
+            description = temp.pop("Description", None)
+            if len(description) == 0:
+                description = device_id
+            temp.pop("@odata.context",None)
+            temp.pop("@odata.etag", None)
+            temp.pop("@odata.id",None)
+            temp.pop("Oem",None)
+            temp.pop("@odata.type",None)
+            temp.pop("Status",None)
+            temp.pop("Id")
             #print(temp)
-            firmware_inventory.append(temp)
+            firmware_inventory[description]=temp
         #print(firmware_inventory)
         return firmware_inventory
 
@@ -170,8 +177,8 @@ class ilo4RedfishObj(object):
         self.MESSAGE_REGISTRIES = self.get_base_registry()
         self.SN = self.get_sn()
         self.model = self.get_model()
-        self.bios = {"data":self.download_bios_settings(), "type":"bios"}
-        self.fw_inventory = {"data": self.download_fw_inventory(), "type":"firmware_inventory"}
+        self.bios = {"data": None, "type":"bios"}
+        self.fw_inventory = {"data": None, "type":"firmware_inventory"}
 
     def logout(self):
         #print("Rest logout")
@@ -263,7 +270,16 @@ class ilo4RedfishObj(object):
         #print(href)
         temp = self.rest_get(href)
         data = temp.dict["Current"]
-        return data
+        keys = data.keys()
+        fw_inventory ={}
+        for key in keys:
+            if len(data[key]) > 1:
+                for item in data[key]:
+                    new_key = item["Location"].replace(" ","_") + "_" + item["Name"]
+                    fw_inventory[new_key] = {"Name": item["Name"], "VersionString": item["VersionString"]}
+            else:
+                fw_inventory[key] = {"Name": data[key][0]["Name"], "VersionString": data[key][0]["VersionString"]}
+        return fw_inventory
 
 def read_ilo_creds():
     """
@@ -352,32 +368,118 @@ def read_latest_baseline(type=None, sn=None, path=None):
     """
     Check for baseline JSON files either BIOS of firmware inventory (types) for a specific serial number in the current working directory. Read in the JSON file and return the JSON content. If file does not exist, then return None
     """
+    #print(type)
+    #print(sn)
+    #print(path)
     results = []
     for root, dirs, files in os.walk(path):
         for filename in files:
             if sn in filename and type in filename and "diff" not in filename:
                 results.append("{path}".format(path=root+"\\"+filename)) # For windows system only
     if len(results) <= 0:
-        return False
+        return (None, None)
     results = sorted(results, reverse=True)
     #print(results)
     latest_baseline = results[0]
     print("Latests baseline: {file}".format(file=latest_baseline))
     data = read_json_file(latest_baseline)
+    #print(data)
+    #print(latest_baseline)
     return (data, latest_baseline)
 
-def save_baseline(json_data=None, model=None, sn=None, type=None):
+def save_baseline(json_data=None, model=None, sn=None, type=None, ilo_version=None):
     pwd = os.getcwd()   
-    filename = '{model}_iLO5_{serialnumber}_{type}_{datetime}.json'.format(model=model,serialnumber=sn,type=type,datetime=datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    filename = '{model}_iLO{ilo_version}_{serialnumber}_{type}_{datetime}.json'.format(model=model,ilo_version=ilo_version,serialnumber=sn,type=type,datetime=datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     print("Save baselines to {path}/{filename}".format(path=pwd, filename=filename))
     with open(filename, 'w') as fp:
         json.dump(json_data, fp, sort_keys=True, indent=4, separators=(',', ': '))
 
-def compare_system_baseline(baseline=None,system_settings=None,baseline_filename=None):
+def compare_bios_baseline(baseline=None,system_settings=None,baseline_filename=None):
     """
-    Compare system settings in JSON to a baseline in JSON. Returns a discrepency JSON if there is any, else return None.
+    Compare system settings in JSON to a BIOS baseline in JSON. Returns a discrepency JSON if there is any, else return None.
     """
-    pass
+    diff_flag = False # Set to True if discrepency found
+    all_keys = []
+    for key in system_settings.keys():
+        all_keys.append(key)
+    for key in baseline.keys():
+        all_keys.append(key)
+    all_keys = set(all_keys)
+    diff_data = {}
+    diff_data["baseline_file_input"] = baseline_filename
+    for key in all_keys:
+        try:
+            system_data = system_settings[key]
+        except KeyError:
+            system_data = None
+        try:
+            baseline_data = baseline[key]
+        except KeyError:
+            baseline_data = None
+        if  system_data == baseline_data:
+            pass
+        else:
+            diff_data[key] = {"baseline": baseline_data,"system": system_data}
+            diff_flag = True
+    return (diff_data, diff_flag)
+
+def compare_ilo5_fw_baseline(baseline=None,system_settings=None,baseline_filename=None):
+    """
+    Compare iLO5 system settings in JSON to a firmware inventory in JSON. Returns a discrepency JSON if there is any, else return None.
+    """
+    diff_flag = False
+    all_keys=[]
+    for key in system_settings.keys():
+        all_keys.append(key)
+    for key in baseline.keys():
+        all_keys.append(key)
+    all_keys = set(all_keys)
+    diff_data = {}
+    diff_data["baseline_file_input"] = baseline_filename
+    for key in all_keys:
+        try:
+            system_data = system_settings[key]
+        except KeyError:
+            system_data = {"Name":None, "Version":None}
+        try:
+            baseline_data = baseline[key]
+        except KeyError:
+            baseline_data = {"Name":None, "Version":None}
+        if system_data["Name"] == baseline_data["Name"] and system_data["Version"] == baseline_data["Version"] :
+            pass
+        else:
+            diff_data[key] = {"baseline": baseline_data,"system": system_data}
+            diff_flag = True
+    return (diff_data, diff_flag)
+
+def compare_ilo4_fw_baseline(baseline=None,system_settings=None,baseline_filename=None):
+    """
+    Compare iLO4 system settings in JSON to a firmware inventory in JSON. Returns a discrepency JSON if there is any, else return None.
+    """
+    diff_flag = False
+    all_keys=[]
+    for key in system_settings.keys():
+        all_keys.append(key)
+    for key in baseline.keys():
+        all_keys.append(key)
+    all_keys = set(all_keys)
+    diff_data = {}
+    diff_data["baseline_file_input"] = baseline_filename
+    for key in all_keys:
+        try:
+            system_data = system_settings[key]
+        except KeyError:
+            system_data = {"Name":None, "VersionString":None}
+        try:
+            baseline_data = baseline[key]
+        except KeyError:
+            baseline_data = {"Name":None, "VersionString":None}
+        if system_data["Name"] == baseline_data["Name"] and system_data["VersionString"] == baseline_data["VersionString"] :
+            pass
+        else:
+            diff_data[key] = {"baseline": baseline_data,"system": system_data}
+            diff_flag = True
+    return (diff_data, diff_flag)
 
 def baseline_compliances(ilo_ip, username, password):
     """
@@ -387,42 +489,51 @@ def baseline_compliances(ilo_ip, username, password):
     if iLO_obj.ilo_version == 4: # iLO 4 found. Log out iLO 5 Redfish and login in again with iLO 4 REST API
         iLO_obj.logout()
         iLO_obj = ilo4RedfishObj(host=ilo_ip, login_account=username, login_password=password)
+        iLO_obj.bios["data"] = iLO_obj.download_bios_settings()
+        iLO_obj.fw_inventory["data"] = iLO_obj.download_fw_inventory()
         print("iLO serial number: {sn}".format(sn=iLO_obj.SN))
         path = os.getcwd()
-        #print(path)
         (bios_baseline_json, latest_bios_baseline) = read_latest_baseline(type=iLO_obj.bios["type"], sn=iLO_obj.SN, path=path)
         if bios_baseline_json:
-            bios_diff_json = compare_system_baseline(baseline=biso_baseline_json, system_settings=iLO_obj.bios["data"], baseline_filename=latest_fw_baseline)
-            #save_baseline(json_data=bios_diff_json, model=iLO_obj.model, type=iLO_obj.bios["type"]+"_diff", sn=iLO_obj.SN)        
+            (bios_diff_json, diff_found) = compare_bios_baseline(baseline=bios_baseline_json, system_settings=iLO_obj.bios["data"], baseline_filename=latest_bios_baseline)
+            if diff_found:
+                save_baseline(json_data=bios_diff_json, model=iLO_obj.model, ilo_version="4", type=iLO_obj.bios["type"]+"_diff", sn=iLO_obj.SN)        
         (fw_baseline_json, latest_fw_baseline) = read_latest_baseline(type=iLO_obj.fw_inventory["type"], sn=iLO_obj.SN, path=path)
         if fw_baseline_json:
-            fw_inventory_diff_json = compare_system_baseline(baseline=fw_baseline_json, system_settings=iLO_obj.fw_inventory["data"], baseline_filename=latest_fw_baseline)
-            #save_baseline(json_data=fw_inventory_diff_json, model=iLO_obj.model, type=iLO_obj.fw_inventory["type"]+"_diff", sn=iLO_obj.SN)        
-        save_baseline(json_data=iLO_obj.bios["data"], model=iLO_obj.model, type=iLO_obj.bios["type"], sn=iLO_obj.SN)
-        save_baseline(json_data=iLO_obj.fw_inventory["data"], model=iLO_obj.model, type=iLO_obj.fw_inventory["type"], sn=iLO_obj.SN)
+            (fw_inventory_diff_json, diff_found) = compare_ilo4_fw_baseline(baseline=fw_baseline_json, system_settings=iLO_obj.fw_inventory["data"], baseline_filename=latest_fw_baseline)
+            if diff_found:
+                save_baseline(json_data=fw_inventory_diff_json, model=iLO_obj.model, ilo_version="4", type=iLO_obj.fw_inventory["type"]+"_diff", sn=iLO_obj.SN)
+        save_baseline(json_data=iLO_obj.bios["data"], model=iLO_obj.model, ilo_version="4", type=iLO_obj.bios["type"], sn=iLO_obj.SN)
+        save_baseline(json_data=iLO_obj.fw_inventory["data"], model=iLO_obj.model, ilo_version="4", type=iLO_obj.fw_inventory["type"], sn=iLO_obj.SN)
         iLO_obj.logout()
         return 0
     elif iLO_obj.ilo_version == -1:
         raise Exception("iLO verison not identified")
+    iLO_obj.bios["data"] = iLO_obj.download_bios_settings()
+    iLO_obj.fw_inventory["data"] = iLO_obj.download_fw_inventory()
     print("iLO serial number: {sn}".format(sn=iLO_obj.SN))
     path = os.getcwd()
     #print(path)
-    bios_baseline_json = read_latest_baseline(type=iLO_obj.bios["type"], sn=iLO_obj.SN, path=path)
+    (bios_baseline_json, latest_bios_baseline) = read_latest_baseline(type=iLO_obj.bios["type"], sn=iLO_obj.SN, path=path)
     if bios_baseline_json:
-        bios_diff_json = compare_system_baseline(baseline=bios_baseline_json,system_settings=iLO_obj.bios["data"])
-        #save_baseline(json_data=bios_diff_json, model=iLO_obj.model, type=iLO_obj.bios["type"]+"_diff", sn=iLO_obj.SN)        
-    fw_baseline_json = read_latest_baseline(type=iLO_obj.fw_inventory["type"], sn=iLO_obj.SN, path=path)
+        (bios_diff_json, diff_found) = compare_bios_baseline(baseline=bios_baseline_json,system_settings=iLO_obj.bios["data"],baseline_filename=latest_bios_baseline)
+        if diff_found:
+            save_baseline(json_data=bios_diff_json, model=iLO_obj.model, ilo_version=iLO_obj.ilo_version, type=iLO_obj.bios["type"]+"_diff", sn=iLO_obj.SN)        
+    (fw_baseline_json, latest_fw_baseline)  = read_latest_baseline(type=iLO_obj.fw_inventory["type"], sn=iLO_obj.SN, path=path)
     if fw_baseline_json:
-        fw_inventory_diff_json = compare_system_baseline(baseline=fw_baseline_json,system_settings=iLO_obj.fw_inventory["data"])
-        #save_baseline(json_data=fw_inventory_diff_json, model=iLO_obj.model, type=iLO_obj.fw_inventory["type"]+"_diff", sn=iLO_obj.SN)        
-    save_baseline(json_data=iLO_obj.bios["data"], model=iLO_obj.model, type=iLO_obj.bios["type"], sn=iLO_obj.SN)
-    save_baseline(json_data=iLO_obj.fw_inventory["data"], model=iLO_obj.model, type=iLO_obj.fw_inventory["type"], sn=iLO_obj.SN)
+        (fw_inventory_diff_json, diff_found) = compare_ilo5_fw_baseline(baseline=fw_baseline_json,system_settings=iLO_obj.fw_inventory["data"],baseline_filename=latest_fw_baseline)
+        if diff_found:
+            save_baseline(json_data=fw_inventory_diff_json, model=iLO_obj.model, ilo_version=iLO_obj.ilo_version, type=iLO_obj.fw_inventory["type"]+"_diff", sn=iLO_obj.SN)        
+    save_baseline(json_data=iLO_obj.bios["data"], model=iLO_obj.model, ilo_version=iLO_obj.ilo_version,type=iLO_obj.bios["type"], sn=iLO_obj.SN)
+    save_baseline(json_data=iLO_obj.fw_inventory["data"], model=iLO_obj.model, ilo_version=iLO_obj.ilo_version,type=iLO_obj.fw_inventory["type"], sn=iLO_obj.SN)
     iLO_obj.logout()
     return 0
 
 if __name__ == "__main__":
-    iLO_creds = read_ilo_creds()
+    #iLO_creds = read_ilo_creds()
     #download_configs(ilo_ip=iLO_creds["ip"], username=iLO_creds["username"], password=iLO_creds["password"])
-    baseline_compliances(ilo_ip=iLO_creds["ip"], username=iLO_creds["username"], password=iLO_creds["password"])
+    #baseline_compliances(ilo_ip=iLO_creds["ip"], username=iLO_creds["username"], password=iLO_creds["password"])
+    #baseline_compliances(ilo_ip="https://10.188.1.201", username="usradmin", password='HP!nvent')
+    baseline_compliances(ilo_ip="https://10.188.1.184", username="v241usradmin", password='HP!nvent123')
     
 
