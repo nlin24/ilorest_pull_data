@@ -530,10 +530,7 @@ def baseline_compliances(ilo_ip, username, password):
     return 0
 
 if __name__ == "__main__":
-    #iLO_creds = read_ilo_creds()
+    iLO_creds = read_ilo_creds()
     #download_configs(ilo_ip=iLO_creds["ip"], username=iLO_creds["username"], password=iLO_creds["password"])
-    #baseline_compliances(ilo_ip=iLO_creds["ip"], username=iLO_creds["username"], password=iLO_creds["password"])
-    #baseline_compliances(ilo_ip="https://10.188.1.201", username="usradmin", password='HP!nvent')
-    baseline_compliances(ilo_ip="https://10.188.1.184", username="v241usradmin", password='HP!nvent123')
+    baseline_compliances(ilo_ip=iLO_creds["ip"], username=iLO_creds["username"], password=iLO_creds["password"])
     
-
