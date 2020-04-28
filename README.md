@@ -11,10 +11,21 @@ Dependencies are listed in _requirements.txt_. Use Pip to install the dependenci
 The script takes in two parameters, _--iloip_ and _--username_, and then it would prompt the operator to enter the login password. It then saves the BIOS settings and the firmware inventory to the current working directory.
 1. --iloip: iLO IP address
 2. --username: iLO login username
+3. --password: iLO login password
 ```
-operator$ python system_baseline_compliance.py --username administrator --iloip 192.168.0.100
-password: iLO login password
-> 
+operator$ python system_baseline_compliance.py -h
+usage: system_baseline_compliance.py [-h] -p PASSWORD -i ILOIP -u USERNAME
+ 
+optional arguments:
+  -h, --help            show this help message and exit
+  -p PASSWORD, --password PASSWORD
+                        iLO login password
+  -i ILOIP, --iloip ILOIP
+                        iLO IP address or FQDN (without http:// or https://
+                        and any trailing /)
+  -u USERNAME, --username USERNAME
+                        iLO login name
+operator$ python system_baseline_compliance.py --username administrator --iloip 192.168.0.100 --password adminPwd
 iLO serial number: MAX63507MJ
 Latests baseline: C:\Users\operator\ilorest_pull_data-master\ProLiant_DL360_Gen9_iLO4_MAX63507MJ_bios_20191118-145243.json
 Latests baseline: C:\Users\operator\ilorest_pull_data-master\ProLiant_DL360_Gen9_iLO4_MAX63507MJ_firmware_inventory_20191118-145243.json
